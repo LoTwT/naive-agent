@@ -5,7 +5,7 @@ import process from "process"
 import { createOpenAI } from "@ai-sdk/openai"
 import { type ModelMessage } from "ai"
 
-import { agentLoop } from "./agent-loop"
+import { agentLoop, BudgetState } from "./agent-loop"
 import { createMockModel } from "./mock-model"
 import { calculatorTool, weatherTool } from "./tools"
 
@@ -21,6 +21,8 @@ const model =
 
 const tools = { get_weather: weatherTool, calculator: calculatorTool }
 const messages: ModelMessage[] = []
+// 预算由调用方持有，跨轮持续累计——agentLoop 只负责消费它
+const budget: BudgetState = { used: 0, limit: 15000 }
 const rl = createInterface({ input: process.stdin, output: process.stdout })
 
 const SYSTEM = `你是 Naive Agent，一个有工具调用能力的 AI 助手。
@@ -38,11 +40,12 @@ function ask() {
 
     messages.push({ role: "user", content: trimmed })
 
-    await agentLoop(model, tools, messages, SYSTEM)
+    await agentLoop(model, tools, messages, SYSTEM, budget)
 
     ask()
   })
 }
 
-console.log('Naive Agent v0.2 (type "exit" to quit)\n')
+console.log('Naive Agent v0.3 — Fuses (type "exit" to quit)\n')
+console.log('试试输入："测试死循环"、"测试重试"、"测试预算" 看三层防护效果\n')
 ask()
