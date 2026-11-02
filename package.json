@@ -10,8 +10,8 @@
     "fmt": "oxfmt"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.2",
-    "ai": "^7.0.4",
+    "@ai-sdk/openai": "^2.0.44",
+    "ai": "^5.0.98",
     "dotenv": "^18.0.9"
   },
   "devDependencies": {

@@ -2,28 +2,28 @@ import "dotenv/config"
 import { createInterface } from "node:readline"
 import process from "process"
 
-import { createOpenAI } from "@ai-sdk/openai"
 import { type ModelMessage } from "ai"
 
-import { agentLoop, BudgetState } from "./agent-loop"
-import { createMockModel } from "./mock-model"
-import { calculatorTool, weatherTool } from "./tools"
+import { agentLoop } from "./agent-loop"
+import { model } from "./model"
+import { ToolRegistry } from "./tool-registry"
+import { allTools } from "./tools"
 
-const openai = createOpenAI({
-  baseURL: process.env.PROVIDER_BASE_URL,
-  apiKey: process.env.PROVIDER_API_KEY,
-})
-
-const model =
-  process.env.PROVIDER_API_KEY && process.env.PROVIDER_MODEL_IDENTITY
-    ? openai.chat(process.env.PROVIDER_MODEL_IDENTITY)
-    : createMockModel()
-
-const tools = { get_weather: weatherTool, calculator: calculatorTool }
 const messages: ModelMessage[] = []
 // 预算由调用方持有，跨轮持续累计——agentLoop 只负责消费它
-const budget: BudgetState = { used: 0, limit: 15000 }
 const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+const registry = new ToolRegistry()
+registry.register(...allTools)
+
+console.log(`已注册 ${registry.getAll().length} 个工具：`)
+for (const tool of registry.getAll()) {
+  const flags = [
+    tool.isConcurrencySafe ? "可并发" : "串行",
+    tool.isReadOnly ? "只读" : "读写",
+  ].join(", ")
+  console.log(`  - ${tool.name}（${flags}）`)
+}
 
 const SYSTEM = `你是 Naive Agent，一个有工具调用能力的 AI 助手。
 需要查询信息时，主动使用工具，不要编造数据。
@@ -40,7 +40,7 @@ function ask() {
 
     messages.push({ role: "user", content: trimmed })
 
-    await agentLoop(model, tools, messages, SYSTEM, budget)
+    await agentLoop(model, registry, messages, SYSTEM)
 
     ask()
   })

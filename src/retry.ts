@@ -5,7 +5,6 @@ export function isRetryable(error: unknown): boolean {
 
   const message = error.message || ""
 
-  // HTTP 状态码判断
   const statusMatch = message.match(/(\d{3})/)
   if (statusMatch) {
     const status = parseInt(statusMatch[1])
@@ -14,12 +13,10 @@ export function isRetryable(error: unknown): boolean {
     if (status >= 400 && status < 500) return false
   }
 
-  // 网络错误
   if (message.includes("ECONNRESET") || message.includes("EPIPE")) return true
   if (message.includes("ETIMEDOUT") || message.includes("timeout")) return true
   if (message.includes("fetch failed") || message.includes("network"))
     return true
-  // AI SDK 会把流式错误包装成 NoOutputGeneratedError
   if (message.includes("No output generated")) return true
 
   return false
