@@ -10,9 +10,10 @@
     "fmt": "oxfmt"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.44",
-    "ai": "^5.0.98",
-    "dotenv": "^18.0.9"
+    "@ai-sdk/openai": "2.0.44",
+    "ai": "5.0.98",
+    "dotenv": "^18.0.9",
+    "fast-glob": "^3.3.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

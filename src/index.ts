@@ -1,17 +1,12 @@
 import "dotenv/config"
 import { createInterface } from "node:readline"
-import process from "process"
 
 import { type ModelMessage } from "ai"
 
-import { agentLoop } from "./agent-loop"
-import { model } from "./model"
-import { ToolRegistry } from "./tool-registry"
-import { allTools } from "./tools"
-
-const messages: ModelMessage[] = []
-// 预算由调用方持有，跨轮持续累计——agentLoop 只负责消费它
-const rl = createInterface({ input: process.stdin, output: process.stdout })
+import { agentLoop } from "./agent-loop.js"
+import { model } from "./model.js"
+import { ToolRegistry } from "./tool-registry.js"
+import { allTools } from "./tools.js"
 
 const registry = new ToolRegistry()
 registry.register(...allTools)
@@ -25,8 +20,13 @@ for (const tool of registry.getAll()) {
   console.log(`  - ${tool.name}（${flags}）`)
 }
 
+const messages: ModelMessage[] = []
+const rl = createInterface({ input: process.stdin, output: process.stdout })
+
 const SYSTEM = `你是 Naive Agent，一个有工具调用能力的 AI 助手。
-需要查询信息时，主动使用工具，不要编造数据。
+你有以下工具可用：get_weather, calculator, read_file, write_file, list_directory, edit_file, glob, grep, bash。
+需要查询信息或操作文件时，主动使用工具，不要编造数据。
+可以同时调用多个互不冲突的工具来提高效率。
 回答要简洁直接。`
 
 function ask() {
@@ -46,6 +46,6 @@ function ask() {
   })
 }
 
-console.log('Naive Agent v0.3 — Fuses (type "exit" to quit)\n')
-console.log('试试输入："测试死循环"、"测试重试"、"测试预算" 看三层防护效果\n')
+console.log('\nNaive Agent v0.4.1 — Builtin Tools (type "exit" to quit)')
+console.log('试试："测试编辑"、"测试搜索"、"测试glob"、"测试bash"\n')
 ask()
