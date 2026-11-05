@@ -4,6 +4,7 @@ import { createInterface } from "node:readline"
 import { type ModelMessage } from "ai"
 
 import { agentLoop } from "./agent-loop.js"
+import { MCPClient, MockMCPClient } from "./mcp-client.js"
 import { model } from "./model.js"
 import { ToolRegistry } from "./tool-registry.js"
 import { allTools } from "./tools.js"
@@ -36,7 +37,45 @@ const SYSTEM = `你是 Naive Agent，一个能搜索互联网、读写代码的 
 
 回答简洁直接，引用信息时标注来源链接。`
 
-function ask() {
+async function connectMCP() {
+  const githubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+
+  let canSpawn = true
+  try {
+    const { execSync } = await import("node:child_process")
+    execSync("echo test", { stdio: "ignore" })
+  } catch {
+    canSpawn = false
+  }
+
+  if (githubToken && canSpawn) {
+    console.log("\n连接 GitHub MCP Server...")
+    try {
+      const client = new MCPClient(
+        "npx",
+        ["-y", "@modelcontextprotocol/server-github"],
+        { GITHUB_PERSONAL_ACCESS_TOKEN: githubToken },
+      )
+      const tools = await registry.registerMCPServer("github", client)
+      console.log(`  已注册 ${tools.length} 个 MCP 工具`)
+      return
+    } catch (err) {
+      console.log(`  MCP 连接失败: ${err instanceof Error ? err.message : err}`)
+      console.log("  降级为 Mock MCP...")
+    }
+  }
+
+  if (!githubToken) {
+    console.log("\n未配置 GITHUB_PERSONAL_ACCESS_TOKEN，使用 Mock MCP")
+  }
+
+  const mockClient = new MockMCPClient()
+  const tools = await registry.registerMCPServer("github", mockClient)
+  console.log(`  已注册 ${tools.length} 个 Mock MCP 工具`)
+}
+
+async function ask() {
+  await connectMCP()
   rl.question("\nYou: ", async (input) => {
     const trimmed = input.trim()
     if (!trimmed || trimmed === "exit") {
@@ -51,9 +90,5 @@ function ask() {
   })
 }
 
-console.log('\nNaive Agent v0.4.3 — Search Tool（"exit" 退出）')
-console.log("试试：")
-console.log("  1. 搜索一下 Vercel AI SDK 最新版本")
-console.log("  2. 2026 年最流行的 Agent 框架是什么")
-console.log("  3. 帮我查一下 TypeScript 7.0 有什么新特性\n")
+console.log("\nNaive Agent")
 ask()
