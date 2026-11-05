@@ -3,25 +3,25 @@ import { createInterface } from "node:readline"
 
 import { type ModelMessage } from "ai"
 
-import { agentLoop } from "./agent-loop.js"
-import { MCPClient, MockMCPClient } from "./mcp-client.js"
+import { agentLoop } from "./agent/loop.js"
+import {
+  PromptBuilder,
+  coreRules,
+  toolGuide,
+  deferredTools,
+  sessionContext,
+  type PromptContext,
+} from "./context/prompt-builder.js"
 import { model } from "./model.js"
-import { ToolDefinition, ToolRegistry } from "./tool-registry.js"
-import { allTools } from "./tools.js"
-
-const searchBackend = process.env.TAVILY_API_KEY
-  ? "Tavily"
-  : process.env.SERPER_API_KEY
-    ? "Serper"
-    : "未配置"
-
-console.log(
-  `搜索后端: ${searchBackend}${searchBackend === "未配置" ? "（在 .env 中设置 TAVILY_API_KEY 或 SERPER_API_KEY）" : ""}`,
-)
+import { SessionStore } from "./session/store.js"
+import { allTools } from "./tools/index.js"
+import { MCPClient, MockMCPClient } from "./tools/mcp-client.js"
+import { ToolRegistry, type ToolDefinition } from "./tools/registry.js"
 
 const registry = new ToolRegistry()
 registry.register(...allTools)
 
+// tool_search 元工具
 const toolSearchTool: ToolDefinition = {
   name: "tool_search",
   description:
@@ -31,8 +31,7 @@ const toolSearchTool: ToolDefinition = {
     properties: {
       query: {
         type: "string",
-        description:
-          '工具名，如 "mcp__github__list_issues"。支持逗号分隔多个工具名',
+        description: '工具名，如 "mcp__github__list_issues"。支持逗号分隔多个',
       },
     },
     required: ["query"],
@@ -42,7 +41,7 @@ const toolSearchTool: ToolDefinition = {
   isReadOnly: true,
   execute: async ({ query }: { query: string }) => {
     const results = registry.searchTools(query)
-    if (results.length === 0) return `没有找到匹配 "${query}" 的工具`
+    if (results.length === 0) return `没有找到工具: ${query}`
     return results.map((t) => ({
       name: t.name,
       description: t.description,
@@ -50,34 +49,93 @@ const toolSearchTool: ToolDefinition = {
     }))
   },
 }
-
 registry.register(toolSearchTool)
 
-const allCount = registry.getAll().length
-const activeTools = registry.getActiveTools()
-const estimate = registry.countTokenEstimate()
-
-console.log(`\n=== 工具统计 ===`)
-console.log(`  全部工具: ${allCount} 个`)
-console.log(`  活跃工具: ${activeTools.length} 个`)
-console.log(`  延迟工具: ${allCount - activeTools.length} 个`)
-console.log(
-  `  Token 估算: ~${estimate.active} (活跃) + ~${estimate.deferred} (延迟，不占 prompt)`,
-)
-
-const messages: ModelMessage[] = []
-const rl = createInterface({ input: process.stdin, output: process.stdout })
-
-const SYSTEM = `你是 Naive Agent，一个能搜索互联网、读写代码的 AI 助手。
-
-你有 web_search 和 web_fetch 两个搜索相关的工具：
-- web_search：搜索互联网，返回相关网页的标题、链接和内容摘要
-- web_fetch：抓取指定 URL 的完整内容，转为 Markdown
-
-当用户问的问题需要最新信息时，先用 web_search 搜索，拿到结果后总结回答。
-如果搜索结果的摘要不够详细，用 web_fetch 抓取具体链接的全文。
-
-回答简洁直接，引用信息时标注来源链接。`
+// 模拟 MCP 工具
+function registerSimulatedTools() {
+  const simulatedTools: ToolDefinition[] = [
+    {
+      name: "mcp__notion__search_pages",
+      description: "[MCP:notion] 搜索 Notion 页面",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+      shouldDefer: true,
+      searchHint: "notion search pages documents",
+      isConcurrencySafe: true,
+      isReadOnly: true,
+      execute: async ({ query }: any) =>
+        JSON.stringify([{ title: `Mock: ${query}`, id: "page-001" }]),
+    },
+    {
+      name: "mcp__notion__create_page",
+      description: "[MCP:notion] 创建 Notion 页面",
+      parameters: {
+        type: "object",
+        properties: { title: { type: "string" }, content: { type: "string" } },
+        required: ["title"],
+      },
+      shouldDefer: true,
+      searchHint: "notion create page document write",
+      isConcurrencySafe: false,
+      isReadOnly: false,
+      execute: async ({ title }: any) => `已创建页面: ${title}`,
+    },
+    {
+      name: "mcp__browser__navigate",
+      description: "[MCP:browser] 导航到指定 URL",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+      shouldDefer: true,
+      searchHint: "browser navigate open url webpage",
+      isConcurrencySafe: false,
+      isReadOnly: false,
+      execute: async ({ url }: any) => `已导航到 ${url}`,
+    },
+    {
+      name: "mcp__browser__screenshot",
+      description: "[MCP:browser] 对当前页面截图",
+      parameters: { type: "object", properties: {} },
+      shouldDefer: true,
+      searchHint: "browser screenshot capture page",
+      isConcurrencySafe: true,
+      isReadOnly: true,
+      execute: async () => "[screenshot data]",
+    },
+    {
+      name: "mcp__supabase__query",
+      description: "[MCP:supabase] 执行 SQL 查询",
+      parameters: {
+        type: "object",
+        properties: { sql: { type: "string" } },
+        required: ["sql"],
+      },
+      shouldDefer: true,
+      searchHint: "supabase database sql query select",
+      isConcurrencySafe: true,
+      isReadOnly: true,
+      execute: async ({ sql }: any) =>
+        JSON.stringify([{ id: 1, name: "mock_row", sql }]),
+    },
+    {
+      name: "mcp__supabase__list_tables",
+      description: "[MCP:supabase] 列出数据库所有表",
+      parameters: { type: "object", properties: {} },
+      shouldDefer: true,
+      searchHint: "supabase database list tables schema",
+      isConcurrencySafe: true,
+      isReadOnly: true,
+      execute: async () => JSON.stringify(["users", "orders", "products"]),
+    },
+  ]
+  registry.register(...simulatedTools)
+  return simulatedTools.length
+}
 
 async function connectMCP() {
   const githubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN
@@ -116,21 +174,78 @@ async function connectMCP() {
   console.log(`  已注册 ${tools.length} 个 Mock MCP 工具`)
 }
 
-async function ask() {
+async function main() {
   await connectMCP()
-  rl.question("\nYou: ", async (input) => {
-    const trimmed = input.trim()
-    if (!trimmed || trimmed === "exit") {
-      console.log("Bye!")
-      rl.close()
-      return
-    }
+  const simCount = registerSimulatedTools()
+  console.log(`  已注册 ${simCount} 个模拟 MCP 工具`)
 
-    messages.push({ role: "user", content: trimmed })
-    await agentLoop(model, registry, messages, SYSTEM)
-    ask()
-  })
+  // Session 持久化
+  const isContinue = process.argv.includes("--continue")
+  const sessionId = "default"
+  const store = new SessionStore(sessionId)
+
+  let messages: ModelMessage[] = []
+  if (isContinue && store.exists()) {
+    messages = store.load()
+    console.log(
+      `\n[Session] 恢复会话 "${sessionId}"，${messages.length} 条历史消息`,
+    )
+  } else {
+    console.log(`\n[Session] 新会话 "${sessionId}"`)
+  }
+
+  // Prompt Pipe 组装 system prompt
+  const builder = new PromptBuilder()
+    .pipe("coreRules", coreRules())
+    .pipe("toolGuide", toolGuide())
+    .pipe("deferredTools", deferredTools())
+    .pipe("sessionContext", sessionContext())
+
+  const promptCtx: PromptContext = {
+    toolCount: registry.getActiveTools().length,
+    deferredToolSummary: registry.getDeferredToolSummary(),
+    sessionMessageCount: messages.length,
+    sessionId,
+  }
+
+  const SYSTEM = builder.build(promptCtx)
+
+  // Debug: 显示 Prompt Pipe 各模块状态
+  builder.debug(promptCtx)
+
+  const activeTools = registry.getActiveTools()
+  console.log(`活跃工具: ${activeTools.length} 个`)
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+  function ask() {
+    rl.question("\nYou: ", async (input) => {
+      const trimmed = input.trim()
+      if (!trimmed || trimmed === "exit") {
+        console.log("Bye!")
+        await registry.closeAllMCP()
+        rl.close()
+        return
+      }
+
+      const userMsg: ModelMessage = { role: "user", content: trimmed }
+      messages.push(userMsg)
+      store.append(userMsg)
+
+      const beforeLen = messages.length
+      await agentLoop(model, registry, messages, SYSTEM)
+
+      // 持久化本轮新增的消息（agent loop 会往 messages 里 push assistant/tool 消息）
+      const newMessages = messages.slice(beforeLen)
+      store.appendAll(newMessages)
+
+      ask()
+    })
+  }
+
+  console.log('Naive Agent — Session + Prompt Pipe (type "exit" to quit)')
+  console.log("对话会自动保存。用 pnpm run continue 恢复上次对话。\n")
+  ask()
 }
 
-console.log("\nNaive Agent")
-ask()
+main().catch(console.error)

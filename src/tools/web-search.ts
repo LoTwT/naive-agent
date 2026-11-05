@@ -1,6 +1,6 @@
 import TurndownService from "turndown"
 
-import type { ToolDefinition } from "./tool-registry.js"
+import type { ToolDefinition } from "./registry.js"
 
 // ── Tavily（自动挡）──────────────────────────────
 
