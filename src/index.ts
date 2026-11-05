@@ -6,11 +6,8 @@ import { type ModelMessage } from "ai"
 import { agentLoop } from "./agent-loop.js"
 import { MCPClient, MockMCPClient } from "./mcp-client.js"
 import { model } from "./model.js"
-import { ToolRegistry } from "./tool-registry.js"
+import { ToolDefinition, ToolRegistry } from "./tool-registry.js"
 import { allTools } from "./tools.js"
-
-const registry = new ToolRegistry()
-registry.register(...allTools)
 
 const searchBackend = process.env.TAVILY_API_KEY
   ? "Tavily"
@@ -18,9 +15,54 @@ const searchBackend = process.env.TAVILY_API_KEY
     ? "Serper"
     : "未配置"
 
-console.log(`已注册 ${registry.getAll().length} 个工具`)
 console.log(
   `搜索后端: ${searchBackend}${searchBackend === "未配置" ? "（在 .env 中设置 TAVILY_API_KEY 或 SERPER_API_KEY）" : ""}`,
+)
+
+const registry = new ToolRegistry()
+registry.register(...allTools)
+
+const toolSearchTool: ToolDefinition = {
+  name: "tool_search",
+  description:
+    "获取延迟工具的完整定义。传入工具名（从系统提示的延迟工具列表中选取），返回该工具的完整参数 Schema",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          '工具名，如 "mcp__github__list_issues"。支持逗号分隔多个工具名',
+      },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  isConcurrencySafe: true,
+  isReadOnly: true,
+  execute: async ({ query }: { query: string }) => {
+    const results = registry.searchTools(query)
+    if (results.length === 0) return `没有找到匹配 "${query}" 的工具`
+    return results.map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    }))
+  },
+}
+
+registry.register(toolSearchTool)
+
+const allCount = registry.getAll().length
+const activeTools = registry.getActiveTools()
+const estimate = registry.countTokenEstimate()
+
+console.log(`\n=== 工具统计 ===`)
+console.log(`  全部工具: ${allCount} 个`)
+console.log(`  活跃工具: ${activeTools.length} 个`)
+console.log(`  延迟工具: ${allCount - activeTools.length} 个`)
+console.log(
+  `  Token 估算: ~${estimate.active} (活跃) + ~${estimate.deferred} (延迟，不占 prompt)`,
 )
 
 const messages: ModelMessage[] = []
