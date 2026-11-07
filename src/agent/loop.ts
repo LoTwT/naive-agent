@@ -1,5 +1,6 @@
 import { streamText, type ModelMessage } from "ai"
 
+import type { TokenTracker } from "../context/defense.js"
 import { ToolRegistry } from "../tools/registry.js"
 import {
   detect,
@@ -18,6 +19,7 @@ export async function agentLoop(
   registry: ToolRegistry,
   messages: ModelMessage[],
   system: string,
+  tracker: TokenTracker,
 ) {
   let step = 0
   let totalTokens = 0
@@ -114,10 +116,14 @@ export async function agentLoop(
       break
     }
 
-    messages.push(...stepResponse!.messages)
-
     const inp = stepUsage?.inputTokens?.total ?? stepUsage?.inputTokens ?? 0
     const out = stepUsage?.outputTokens?.total ?? stepUsage?.outputTokens ?? 0
+    if (inp > 0) tracker.updateFromAPI(inp)
+
+    const responseMessages = stepResponse!.messages as ModelMessage[]
+    messages.push(...responseMessages)
+    tracker.addMessages(responseMessages)
+
     totalTokens += inp + out
     if (totalTokens > TOKEN_BUDGET * 0.9) {
       console.log(
