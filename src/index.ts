@@ -1,4 +1,5 @@
 import "dotenv/config"
+import fs from "node:fs"
 import { createInterface } from "node:readline"
 
 import { type ModelMessage } from "ai"
@@ -8,6 +9,7 @@ import { contextCommands } from "./commands/context.js"
 import { debugCommands } from "./commands/debug.js"
 import { createDispatcher, type CommandContext } from "./commands/index.js"
 import { memoryCommands } from "./commands/memory.js"
+import { ragCommands } from "./commands/rag.js"
 import { estimateMessageTokens } from "./context/defense.js"
 import {
   PromptBuilder,
@@ -17,12 +19,21 @@ import {
   sessionContext,
   type PromptContext,
 } from "./context/prompt-builder.js"
+import { memoryContext, ragContext } from "./context/prompt-pipes.js"
 import { MemoryStore } from "./memory/store.js"
 import { model } from "./model.js"
+import { chunkDocument } from "./rag/chunker.js"
+import {
+  createMockEmbedder,
+  createDashScopeEmbedder,
+  embed,
+} from "./rag/embedder.js"
+import { VectorStore } from "./rag/store.js"
 import { SessionStore } from "./session/store.js"
 import { allTools } from "./tools/index.js"
 import { MockMCPClient } from "./tools/mcp-client.js"
 import { createMemoryTool } from "./tools/memory-tools.js"
+import { createRagTools } from "./tools/rag-tools.js"
 import { ToolRegistry } from "./tools/registry.js"
 import { createToolSearchTool } from "./tools/tool-search.js"
 import { UsageTracker } from "./usage/tracker.js"
@@ -32,10 +43,17 @@ const registry = new ToolRegistry()
 registry.register(...allTools)
 registry.register(createToolSearchTool(registry))
 
-// ── Memory ────────────────────────────────
+// ── Memory ───────────────────────────────
 const memoryStore = new MemoryStore(".")
 memoryStore.init()
 registry.register(createMemoryTool(memoryStore))
+
+// ── RAG ───────────────────────────────
+const vectorStore = new VectorStore()
+const embedFn = process.env.DASHSCOPE_API_KEY
+  ? createDashScopeEmbedder(process.env.DASHSCOPE_API_KEY)
+  : createMockEmbedder()
+registry.register(...createRagTools(vectorStore, embedFn))
 
 async function connectMCP() {
   const mockClient = new MockMCPClient()
@@ -43,11 +61,12 @@ async function connectMCP() {
   console.log(`  已注册 ${tools.length} 个 Mock MCP 工具`)
 }
 
-// ── Commands ────────────────────────────────
+// ── Commands ───────────────────────────────
 const dispatch = createDispatcher([
   ...debugCommands,
   ...contextCommands,
   ...memoryCommands,
+  ...ragCommands,
 ])
 
 async function main() {
@@ -62,7 +81,8 @@ async function main() {
     .pipe("coreRules", coreRules())
     .pipe("toolGuide", toolGuide())
     .pipe("deferredTools", deferredTools())
-    .pipe("memoryContext", () => memoryStore.buildPromptSection())
+    .pipe("memoryContext", memoryContext(memoryStore))
+    .pipe("ragContext", ragContext(vectorStore))
     .pipe("sessionContext", sessionContext())
 
   const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -96,6 +116,7 @@ async function main() {
         makePromptCtx,
         ask,
         memoryStore,
+        vectorStore,
       }
       const handled = dispatch(trimmed, ctx)
       if (handled === "async") return
@@ -123,16 +144,35 @@ async function main() {
     })
   }
 
-  console.log('Naive Agent — Memory System (type "exit" to quit)')
+  console.log('Naive Agent — RAG (type "exit" to quit)')
   console.log("快捷命令：")
-  console.log("  /memory         — 查看所有记忆")
-  console.log("  /memory search  — 搜索记忆")
-  console.log("  /context        — 终端里看 context 占用矩阵")
-  console.log("  /usage          — 累计 token 用量和成本")
-  console.log("  status          — 当前消息数、token 和记忆数")
+  console.log("  ingest <path>   — 导入文档到知识")
+  console.log("  /rag            — 查看知识库状态")
+  console.log("  /memory         — 查看记忆")
+  console.log("  /context        — context 占用矩阵")
+  console.log("  status          — 当前状态")
   console.log("")
-  console.log(`  已加载 ${memoryStore.list().length} 条历史记忆`)
-  console.log("")
+
+  if (fs.existsSync("docs")) {
+    const files = fs.readdirSync("docs").filter((f) => f.endsWith(".md"))
+    if (files.length > 0) {
+      console.log(`  发现 ${files.length} 个文档，自动导入知识库...`)
+      for (const f of files) {
+        const path = `docs/${f}`
+        const text = fs.readFileSync(path, "utf-8")
+        const chunks = chunkDocument(path, text)
+        const embeddings = await embed(
+          embedFn,
+          chunks.map((c) => c.text),
+        )
+        vectorStore.addBatch(
+          chunks.map((c, i) => ({ chunk: c, embedding: embeddings[i] })),
+        )
+        console.log(`    ${f} → ${chunks.length} 个片段`)
+      }
+      console.log(`  知识库就绪，共 ${vectorStore.size()} 个片段\n`)
+    }
+  }
 
   ask()
 }
