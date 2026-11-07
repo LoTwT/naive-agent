@@ -1,7 +1,7 @@
 import { streamText, type ModelMessage } from "ai"
 
-import type { TokenTracker } from "../context/defense.js"
 import { ToolRegistry } from "../tools/registry.js"
+import { type UsageTracker, normalizeUsage } from "../usage/tracker.js"
 import {
   detect,
   recordCall,
@@ -19,7 +19,7 @@ export async function agentLoop(
   registry: ToolRegistry,
   messages: ModelMessage[],
   system: string,
-  tracker: TokenTracker,
+  tracker?: UsageTracker,
 ) {
   let step = 0
   let totalTokens = 0
@@ -116,15 +116,32 @@ export async function agentLoop(
       break
     }
 
-    const inp = stepUsage?.inputTokens?.total ?? stepUsage?.inputTokens ?? 0
-    const out = stepUsage?.outputTokens?.total ?? stepUsage?.outputTokens ?? 0
-    if (inp > 0) tracker.updateFromAPI(inp)
+    messages.push(...stepResponse!.messages)
 
-    const responseMessages = stepResponse!.messages as ModelMessage[]
-    messages.push(...responseMessages)
-    tracker.addMessages(responseMessages)
+    // 把 usage 喂给 tracker；tracker 内部按四类 token 分别累加并算 cost
+    const norm = normalizeUsage(stepUsage)
+    const stepRecord = tracker?.record(model?.modelId || "mock-model", norm)
+    totalTokens +=
+      norm.inputTokens +
+      norm.outputTokens +
+      norm.cacheReadTokens +
+      norm.cacheWriteTokens
 
-    totalTokens += inp + out
+    // cache 命中时才打印一行简洁状态，让 cache hit 立刻可见
+    if (stepRecord && (norm.cacheReadTokens > 0 || norm.cacheWriteTokens > 0)) {
+      const tag =
+        norm.cacheReadTokens > 0
+          ? `\x1b[38;5;36m✓ cache hit\x1b[0m`
+          : `\x1b[38;5;220m✎ cache write\x1b[0m`
+      const detail =
+        norm.cacheReadTokens > 0
+          ? `read ${norm.cacheReadTokens}`
+          : `write ${norm.cacheWriteTokens}`
+      console.log(
+        `  [${tag}] ${detail} tokens · 本步 $${stepRecord.cost.toFixed(5)}`,
+      )
+    }
+
     if (totalTokens > TOKEN_BUDGET * 0.9) {
       console.log(
         `  [Token] ${totalTokens}/${TOKEN_BUDGET} (${Math.round((totalTokens / TOKEN_BUDGET) * 100)}%)`,

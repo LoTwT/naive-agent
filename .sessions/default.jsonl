@@ -4,3 +4,5 @@
 {"type":"message","timestamp":"2026-11-05T08:23:15.265Z","message":{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call_tPjRIkRfvEORi5BFQpoazD9w","toolName":"get_weather","input":{"city":"北京"}}]}}
 {"type":"message","timestamp":"2026-11-05T08:23:15.265Z","message":{"role":"tool","content":[{"type":"tool-result","toolCallId":"call_tPjRIkRfvEORi5BFQpoazD9w","toolName":"get_weather","output":{"type":"text","value":"晴，15-25°C，东南风 2 级"}}]}}
 {"type":"message","timestamp":"2026-11-05T08:23:15.266Z","message":{"role":"assistant","content":[{"type":"text","text":"北京今天晴，气温 15～25℃，东南风 2 级。"}]}}
+{"type":"message","timestamp":"2026-11-07T05:44:55.687Z","message":{"role":"user","content":"nihao"}}
+{"type":"message","timestamp":"2026-11-07T05:44:58.024Z","message":{"role":"assistant","content":[{"type":"text","text":"你好！有什么可以帮你的吗？"}]}}

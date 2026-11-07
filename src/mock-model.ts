@@ -1,8 +1,102 @@
 let retryTestCount = 0
+let lastPrefixHash: string | null = null
+let cacheEnabled = true
+
+export function setCacheEnabled(enabled: boolean): void {
+  cacheEnabled = enabled
+  if (!enabled) lastPrefixHash = null
+}
+
+function simpleHash(s: string): string {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  return h.toString(36)
+}
+
+function approxTokensFromChars(chars: number): number {
+  return Math.ceil(chars / 3.5)
+}
+
+function extractSystemContent(prompt: any[]): string {
+  const sys = (prompt || []).find((m: any) => m.role === "system")
+  if (!sys) return ""
+  if (typeof sys.content === "string") return sys.content
+  if (Array.isArray(sys.content))
+    return sys.content.map((c: any) => c.text || "").join("")
+  return ""
+}
+
+function approxMessageTokens(prompt: any[]): number {
+  let chars = 0
+  for (const m of prompt || []) {
+    if (m.role === "system") continue
+    if (typeof m.content === "string") chars += m.content.length
+    else if (Array.isArray(m.content)) {
+      for (const c of m.content as any[]) {
+        if (c.type === "text") chars += (c.text || "").length
+        else if (c.type === "tool-call")
+          chars += JSON.stringify(c.input || {}).length + 80
+        else if (c.type === "tool-result") {
+          const out = c.output
+          if (typeof out === "string") chars += out.length
+          else if (out?.value) chars += String(out.value).length
+          else chars += JSON.stringify(out || {}).length
+          chars += 80
+        }
+      }
+    }
+  }
+  return approxTokensFromChars(chars)
+}
+
+/** 根据 prompt 算这次调用的 usage，并模拟 cache 命中。 */
+function makeUsage(prompt: any[], outputChars = 80) {
+  const system = extractSystemContent(prompt)
+  const prefixContent = system
+  const prefixTokens = approxTokensFromChars(prefixContent.length)
+  const messageTokens = approxMessageTokens(prompt)
+  const outputTokens = approxTokensFromChars(outputChars)
+
+  // 真实模型最小阈值各家不一（Qwen implicit 256、OpenAI 1024、Sonnet 4.7 2048、Opus 4.7 4096）。
+  // 课程里用 512 让普通 SYSTEM 也能演示 cache 行为，等到讲生产配置时再讲各家阈值差异。
+  const MIN_CACHE = 512
+  const cacheable = cacheEnabled && prefixTokens >= MIN_CACHE
+
+  const prefixHash = cacheable ? simpleHash(prefixContent) : null
+  let cacheRead = 0
+  let cacheWrite = 0
+  let input = messageTokens
+
+  if (cacheable) {
+    if (lastPrefixHash === prefixHash) {
+      cacheRead = prefixTokens
+    } else {
+      cacheWrite = prefixTokens
+    }
+    lastPrefixHash = prefixHash
+  } else {
+    input += prefixTokens
+    lastPrefixHash = null
+  }
+
+  // 返回 AI SDK v5 标准字段（number），跟真实模型一致
+  // cacheCreationInputTokens 是 Anthropic provider 元数据里的字段名，AI SDK 透传
+  return {
+    inputTokens: input,
+    outputTokens: outputTokens,
+    totalTokens: input + outputTokens,
+    cachedInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
+  }
+}
 
 const TEXT_RESPONSES: Record<string, string> = {
-  default: "你好！我是 Naive Agent。Session 持久化和 Prompt Pipe 已就绪。。",
-  greeting: "你好！我是 Naive Agent，支持 Profile 过滤和延迟加载 :)",
+  default:
+    "你好！我是 Naive Agent。试试 /context 看上下文占用，/usage 看 token 用量和缓存命中率，/cache off 关掉缓存对比成本差异。",
+  greeting:
+    "你好！我是 Naive Agent，已经接上 prompt cache 和成本追踪 :) 多聊几轮，输入 /usage 看节省了多少。",
 }
 
 interface ToolCallIntent {
@@ -261,16 +355,6 @@ function pickTextResponse(prompt: any[]): string {
   return TEXT_RESPONSES.default
 }
 
-const USAGE = {
-  inputTokens: {
-    total: 10,
-    noCache: 10,
-    cacheRead: undefined,
-    cacheWrite: undefined,
-  },
-  outputTokens: { total: 20, text: 20, reasoning: undefined },
-}
-
 function createDelayedStream(chunks: any[], delayMs = 30): ReadableStream {
   return new ReadableStream({
     start(controller) {
@@ -288,7 +372,7 @@ function createDelayedStream(chunks: any[], delayMs = 30): ReadableStream {
   })
 }
 
-function makeToolCallChunks(intents: ToolCallIntent[]): any[] {
+function makeToolCallChunks(intents: ToolCallIntent[], prompt: any[]): any[] {
   const chunks: any[] = []
   for (const intent of intents) {
     const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -308,7 +392,7 @@ function makeToolCallChunks(intents: ToolCallIntent[]): any[] {
   chunks.push({
     type: "finish",
     finishReason: { unified: "tool-calls", raw: undefined },
-    usage: USAGE,
+    usage: makeUsage(prompt),
   })
   return chunks
 }
@@ -317,13 +401,36 @@ export function createMockModel() {
   return {
     specificationVersion: "v2" as const,
     provider: "mock",
-    modelId: "mock-model-v0.6",
+    modelId: "mock-model",
 
     get supportedUrls() {
       return Promise.resolve({})
     },
 
     async doGenerate({ prompt }: any) {
+      // Detect compression request (called via generateText with compress system prompt)
+      const allText = (prompt || [])
+        .map((m: any) => {
+          if (typeof m.content === "string") return m.content
+          if (Array.isArray(m.content))
+            return m.content.map((c: any) => c.text || "").join("")
+          return ""
+        })
+        .join(" ")
+
+      if (
+        allText.includes("对话压缩系统") ||
+        allText.includes("压缩成一份结构化摘要")
+      ) {
+        const mockSummary = `## 用户意图\n用户在探索项目结构和代码，了解工具系统的设计。\n\n## 已完成的操作\n- 列出了当前目录文件（.env, package.json, sample-data.txt, src/）\n- 读取了 package.json（项目名 naive-agent-08-compaction, 版本 0.8.0）\n- 读取了 sample-data.txt（工具系统设计文档）\n- 搜索了 src/ 目录中的 export（找到 ToolRegistry, agentLoop, SessionStore 等导出）\n\n## 关键发现\n- 项目使用 ai@5.0.98 和 @ai-sdk/openai@2.0.44\n- 工具系统包含 ToolRegistry、truncateResult、并发控制（读写锁）\n- 已实现 SessionStore（JSONL 持久化）和 PromptBuilder（模块化 Prompt）\n\n## 当前状态\n用户刚完成项目结构探索，尚未开始修改代码。\n\n## 需要保留的细节\n- 项目路径：当前工作目录\n- 关键文件：src/tool-registry.ts, src/agent-loop.ts, src/context-compressor.ts`
+        return {
+          content: [{ type: "text" as const, text: mockSummary }],
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: makeUsage(prompt),
+          warnings: [],
+        }
+      }
+
       const text = extractUserText(prompt)
 
       if (text.includes("测试重试") || text.includes("test retry")) {
@@ -335,7 +442,7 @@ export function createMockModel() {
         return {
           content: [{ type: "text" as const, text: "重试成功！" }],
           finishReason: { unified: "stop" as const, raw: undefined },
-          usage: USAGE,
+          usage: makeUsage(prompt),
           warnings: [],
         }
       }
@@ -350,7 +457,7 @@ export function createMockModel() {
             input: intent.args,
           })),
           finishReason: { unified: "tool-calls" as const, raw: undefined },
-          usage: USAGE,
+          usage: makeUsage(prompt),
           warnings: [],
         }
       }
@@ -367,7 +474,7 @@ export function createMockModel() {
             },
           ],
           finishReason: { unified: "tool-calls" as const, raw: undefined },
-          usage: USAGE,
+          usage: makeUsage(prompt),
           warnings: [],
         }
       }
@@ -375,7 +482,7 @@ export function createMockModel() {
       return {
         content: [{ type: "text" as const, text: pickTextResponse(prompt) }],
         finishReason: { unified: "stop" as const, raw: undefined },
-        usage: USAGE,
+        usage: makeUsage(prompt),
         warnings: [],
       }
     },
@@ -400,7 +507,7 @@ export function createMockModel() {
           {
             type: "finish",
             finishReason: { unified: "stop", raw: undefined },
-            usage: USAGE,
+            usage: makeUsage(prompt),
           },
         ]
         return { stream: createDelayedStream(chunks, 30) }
@@ -409,13 +516,18 @@ export function createMockModel() {
       const parallelIntents = detectParallelIntent(text)
       if (parallelIntents && !hasToolResults(prompt)) {
         return {
-          stream: createDelayedStream(makeToolCallChunks(parallelIntents), 15),
+          stream: createDelayedStream(
+            makeToolCallChunks(parallelIntents, prompt),
+            15,
+          ),
         }
       }
 
       const intent = detectToolIntent(prompt)
       if (intent) {
-        return { stream: createDelayedStream(makeToolCallChunks([intent]), 20) }
+        return {
+          stream: createDelayedStream(makeToolCallChunks([intent], prompt), 20),
+        }
       }
 
       const replyText = pickTextResponse(prompt)
@@ -429,7 +541,7 @@ export function createMockModel() {
         {
           type: "finish",
           finishReason: { unified: "stop", raw: undefined },
-          usage: USAGE,
+          usage: makeUsage(prompt),
         },
       ]
       return { stream: createDelayedStream(chunks, 30) }
