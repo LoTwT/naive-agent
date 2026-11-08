@@ -11,9 +11,12 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "2.0.44",
+    "@hono/node-server": "^2.1.6",
+    "@larksuiteoapi/node-sdk": "^1.76.0",
     "ai": "5.0.98",
     "dotenv": "^18.0.9",
     "fast-glob": "^3.3.3",
+    "hono": "^4.13.17",
     "turndown": "^7.2.4"
   },
   "devDependencies": {
