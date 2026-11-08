@@ -94,12 +94,16 @@ function makeUsage(prompt: any[], outputChars = 80) {
 
 const TEXT_RESPONSES: Record<string, string> = {
   default:
-    '你好！我是 Naive Agent。我现在有记忆系统了——试试输入 "记住我喜欢用 TypeScript" 或 "我的记忆" 看看效果。',
+    "你好！我是 Super Agent v0.15——现在支持 Plugin 动态加载了。试试 /plugin 看看已加载的插件，或者让我帮你查数据库。",
   greeting:
-    "你好！我是 Naive Agent，现在支持跨会话记忆了 :) 输入 memory 可以查看记忆相关的命令。",
+    "你好！我是 Super Agent v0.15，支持 Plugin 扩展。试试让我查数据库或者 /plugin 管理插件 :)",
   memorySaved:
     "好的，我已经把这条信息存到记忆里了。下次你重新打开对话，我还会记得这件事。",
   memoryRecalled: "让我查一下记忆...",
+  lintFinished:
+    "记忆库 lint 跑完了，详细情况看上面的报告。建议清理掉那些路径已经不存在的条目，或者把同名的合并一下。",
+  dreamFinished:
+    "记忆整理完成！这次做了以下操作：\n\n- 删除了 old-build-config（webpack.config.js 已不存在，854 天没读过）\n- 删除了 deploy-process-2（与 deploy-process 重名的早期版本）\n- 保留了 legacy-auth-module（路径过期但内容可能还有参考价值，建议手动更新）\n- 保留了 deploy-process（路径需要更新但部署流程本身还有用）\n- typescript-preference 健康，无需处理\n\n记忆库从 5 条精简到 3 条。",
 }
 
 interface ToolCallIntent {
@@ -175,6 +179,57 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
     return { toolName: "get_weather", args: { city: "北京" } }
   }
 
+  // Dream flow — 多步记忆整理
+  if (
+    (text.includes("阶段 1") &&
+      text.includes("阶段 2") &&
+      text.includes("记忆整理")) ||
+    text.includes("dream")
+  ) {
+    if (!hasToolResults(prompt)) {
+      // Step 1: 先 list
+      return { toolName: "memory", args: { action: "list" } }
+    }
+    const combined = getToolResultContent(prompt)
+    if (combined.includes("记忆列表") && !combined.includes("lint 报告")) {
+      // Step 2: list 完了，跑 lint
+      return { toolName: "memory", args: { action: "lint" } }
+    }
+    const deletedOld =
+      combined.includes("已删除: project_old-build-config") ||
+      combined.includes("文件不存在: project_old-build-config")
+    const deletedDup =
+      combined.includes("已删除: project_deploy-process-2") ||
+      combined.includes("文件不存在: project_deploy-process-2")
+    if (combined.includes("lint 报告") && !deletedOld) {
+      // Step 3: lint 完了，删掉 old-build-config
+      return {
+        toolName: "memory",
+        args: { action: "delete", filename: "project_old-build-config.md" },
+      }
+    }
+    if (deletedOld && !deletedDup) {
+      // Step 4: 删重名的那条
+      return {
+        toolName: "memory",
+        args: { action: "delete", filename: "project_deploy-process-2.md" },
+      }
+    }
+    // Step 5: done
+    return null
+  }
+
+  // Memory tool — lint intent（必须排在 save 前面，避免被"记住"误吞）
+  if (
+    (text.includes("lint 记忆") ||
+      text.includes("检查记忆") ||
+      text.includes("记忆体检") ||
+      text === "lint") &&
+    !hasToolResults(prompt)
+  ) {
+    return { toolName: "memory", args: { action: "lint" } }
+  }
+
   // Memory tool — save intent
   if (
     (text.includes("记住") || text.includes("remember")) &&
@@ -202,7 +257,7 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
     }
   }
 
-  // Memory tool — list/search intent
+  // Memory tool — list intent
   if (
     (text.includes("我的记忆") ||
       text.includes("记忆列表") ||
@@ -211,12 +266,95 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
   ) {
     return { toolName: "memory", args: { action: "list" } }
   }
+
+  // Memory tool — search intent（BM25）
   if (
-    (text.includes("搜索记忆") || text.includes("memory search")) &&
+    (text.includes("搜记忆") ||
+      text.includes("搜索记忆") ||
+      text.includes("找记忆") ||
+      text.includes("memory search")) &&
     !hasToolResults(prompt)
   ) {
-    const query = text.replace(/搜索记忆|memory search/g, "").trim() || "all"
+    const query =
+      text
+        .replace(/搜记忆|搜索记忆|找记忆|memory search/g, "")
+        .replace(/^[关于的有]+/, "")
+        .trim() || "all"
     return { toolName: "memory", args: { action: "search", query } }
+  }
+
+  // RAG tool — ingest intent
+  if (
+    (text.includes("导入") || text.includes("ingest")) &&
+    (text.includes("文档") || text.includes(".md")) &&
+    !hasToolResults(prompt)
+  ) {
+    const pathMatch = text.match(/([\w/.-]+\.md)/)
+    const path = pathMatch ? pathMatch[1] : "docs/deployment-guide.md"
+    return { toolName: "rag_ingest", args: { path } }
+  }
+
+  // Plugin tools — supabase (直接调用，不需要 tool_search)
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("有哪些表") ||
+      text.includes("表列表") ||
+      text.includes("list table"))
+  ) {
+    return { toolName: "supabase__list_tables", args: {} }
+  }
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("查用户") ||
+      text.includes("用户数据") ||
+      text.includes("query user"))
+  ) {
+    return { toolName: "supabase__query", args: { table: "users" } }
+  }
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("查帖子") ||
+      text.includes("文章列表") ||
+      text.includes("query post"))
+  ) {
+    return { toolName: "supabase__query", args: { table: "posts" } }
+  }
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("插入") || text.includes("新增") || text.includes("insert"))
+  ) {
+    return {
+      toolName: "supabase__insert",
+      args: {
+        table: "users",
+        data: { name: "赵六", email: "zhao@example.com", role: "user" },
+      },
+    }
+  }
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("数据库") ||
+      text.includes("database") ||
+      text.includes("supabase") ||
+      text.includes("sql"))
+  ) {
+    return { toolName: "supabase__list_tables", args: {} }
+  }
+
+  // RAG tool — search intent
+  if (
+    !hasToolResults(prompt) &&
+    (text.includes("部署") ||
+      text.includes("deploy") ||
+      text.includes("事故") ||
+      text.includes("回滚") ||
+      text.includes("监控") ||
+      text.includes("迁移") ||
+      text.includes("知识库") ||
+      text.includes("搜索知识") ||
+      text.includes("查资料"))
+  ) {
+    return { toolName: "rag_search", args: { query: text } }
   }
 
   // 如果刚刚 tool_search 返回了结果，现在要调用发现的工具
@@ -248,12 +386,6 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
         args: { url: "https://example.com" },
       }
     }
-    if (
-      toolResults.includes("supabase") ||
-      toolResults.includes("mcp__supabase")
-    ) {
-      return { toolName: "mcp__supabase__list_tables", args: {} }
-    }
     return null
   }
 
@@ -270,11 +402,7 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
       args: { query: "mcp__github__list_issues" },
     }
   }
-  if (
-    text.includes("notion") ||
-    text.includes("笔记") ||
-    text.includes("文档")
-  ) {
+  if (text.includes("notion") || text.includes("笔记")) {
     return {
       toolName: "tool_search",
       args: { query: "mcp__notion__search_pages" },
@@ -288,17 +416,6 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
     return {
       toolName: "tool_search",
       args: { query: "mcp__browser__navigate" },
-    }
-  }
-  if (
-    text.includes("数据库") ||
-    text.includes("database") ||
-    text.includes("supabase") ||
-    text.includes("sql")
-  ) {
-    return {
-      toolName: "tool_search",
-      args: { query: "mcp__supabase__list_tables" },
     }
   }
 
@@ -369,6 +486,8 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
 }
 
 function pickTextResponse(prompt: any[]): string {
+  const text = extractUserText(prompt)
+
   if (hasToolResults(prompt)) {
     const combined = getToolResultContent(prompt)
 
@@ -379,9 +498,48 @@ function pickTextResponse(prompt: any[]): string {
     ) {
       return TEXT_RESPONSES.memorySaved
     }
+    // Dream 完成——两条都处理完了
+    if (
+      (text.includes("dream") || text.includes("记忆整理")) &&
+      combined.includes("project_deploy-process-2")
+    ) {
+      return TEXT_RESPONSES.dreamFinished
+    }
+    if (combined.includes("lint 报告") || combined.includes("记忆库健康")) {
+      return `${TEXT_RESPONSES.lintFinished}\n\n${combined}`
+    }
+    if (combined.includes("BM25 搜索结果")) {
+      return `给你按相关度排好的搜索结果：\n${combined}`
+    }
     if (combined.includes("记忆列表") || combined.includes("条记忆")) {
       return `这是你目前的记忆：\n${combined}`
     }
+
+    // Plugin tool responses (supabase)
+    if (combined.includes("tables") && combined.includes("users")) {
+      return `数据库里有这些表：\n${combined}`
+    }
+    if (combined.includes('"table"') && combined.includes('"rows"')) {
+      return `查询结果如下：\n${combined}`
+    }
+    if (
+      combined.includes('"success":true') &&
+      combined.includes('"inserted"')
+    ) {
+      return `数据插入成功：\n${combined}`
+    }
+
+    // RAG tool responses
+    if (combined.includes("已导入") && combined.includes("文档片段")) {
+      return `文档已导入知识库。${combined}`
+    }
+    if (combined.includes("综合分") || combined.includes("来源:")) {
+      return `根据知识库的检索结果：\n\n${combined}`
+    }
+    if (combined.includes("知识库为空")) {
+      return combined
+    }
+
     if (combined.includes("搜索结果") || combined.includes("没有找到")) {
       return combined
     }
@@ -410,7 +568,6 @@ function pickTextResponse(prompt: any[]): string {
     return `工具返回了以下信息：\n${combined}`
   }
 
-  const text = extractUserText(prompt)
   if (text.includes("你好") || text.includes("hello") || text.includes("hi"))
     return TEXT_RESPONSES.greeting
   return TEXT_RESPONSES.default
@@ -483,7 +640,7 @@ export function createMockModel() {
         allText.includes("对话压缩系统") ||
         allText.includes("压缩成一份结构化摘要")
       ) {
-        const mockSummary = `## 用户意图\n用户在探索项目结构和代码，了解工具系统的设计。\n\n## 已完成的操作\n- 列出了当前目录文件（.env, package.json, sample-data.txt, src/）\n- 读取了 package.json（项目名 naive-agent-08-compaction, 版本 0.8.0）\n- 读取了 sample-data.txt（工具系统设计文档）\n- 搜索了 src/ 目录中的 export（找到 ToolRegistry, agentLoop, SessionStore 等导出）\n\n## 关键发现\n- 项目使用 ai@5.0.98 和 @ai-sdk/openai@2.0.44\n- 工具系统包含 ToolRegistry、truncateResult、并发控制（读写锁）\n- 已实现 SessionStore（JSONL 持久化）和 PromptBuilder（模块化 Prompt）\n\n## 当前状态\n用户刚完成项目结构探索，尚未开始修改代码。\n\n## 需要保留的细节\n- 项目路径：当前工作目录\n- 关键文件：src/tool-registry.ts, src/agent-loop.ts, src/context-compressor.ts`
+        const mockSummary = `## 用户意图\n用户在探索项目结构和代码，了解工具系统的设计。\n\n## 已完成的操作\n- 列出了当前目录文件（.env, package.json, sample-data.txt, src/）\n- 读取了 package.json（项目名 super-agent-08-compaction, 版本 0.8.0）\n- 读取了 sample-data.txt（工具系统设计文档）\n- 搜索了 src/ 目录中的 export（找到 ToolRegistry, agentLoop, SessionStore 等导出）\n\n## 关键发现\n- 项目使用 ai@5.0.98 和 @ai-sdk/openai@2.0.44\n- 工具系统包含 ToolRegistry、truncateResult、并发控制（读写锁）\n- 已实现 SessionStore（JSONL 持久化）和 PromptBuilder（模块化 Prompt）\n\n## 当前状态\n用户刚完成项目结构探索，尚未开始修改代码。\n\n## 需要保留的细节\n- 项目路径：当前工作目录\n- 关键文件：src/tool-registry.ts, src/agent-loop.ts, src/context-compressor.ts`
         return {
           content: [{ type: "text" as const, text: mockSummary }],
           finishReason: { unified: "stop" as const, raw: undefined },
