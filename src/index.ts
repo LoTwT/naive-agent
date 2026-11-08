@@ -9,6 +9,7 @@ import { FeishuChannel } from "./channels/feishu.js"
 import { ChannelGateway } from "./channels/gateway.js"
 import { createChannelCommands } from "./commands/channel.js"
 import { contextCommands } from "./commands/context.js"
+import { createCronCommands } from "./commands/cron.js"
 import { debugCommands } from "./commands/debug.js"
 import { dreamCommands } from "./commands/dream.js"
 import { createDispatcher, type CommandContext } from "./commands/index.js"
@@ -27,6 +28,7 @@ import {
   type PromptContext,
 } from "./context/prompt-builder.js"
 import { memoryContext, ragContext } from "./context/prompt-pipes.js"
+import { CronService } from "./cron/service.js"
 import { MemoryStore } from "./memory/store.js"
 import { model } from "./model.js"
 import { PluginManager } from "./plugins/manager.js"
@@ -42,6 +44,7 @@ import { VectorStore } from "./rag/store.js"
 import { HookPipeline } from "./security/hooks.js"
 import { SessionStore } from "./session/store.js"
 import { SkillLoader } from "./skills/loader.js"
+import { createCronTool } from "./tools/cron-tools.js"
 import { allTools } from "./tools/index.js"
 import { MockMCPClient } from "./tools/mcp-client.js"
 import { createMemoryTool } from "./tools/memory-tools.js"
@@ -50,17 +53,14 @@ import { ToolRegistry } from "./tools/registry.js"
 import { createToolSearchTool } from "./tools/tool-search.js"
 import { UsageTracker } from "./usage/tracker.js"
 
-// ── Registry ────────────────────────────────
 const registry = new ToolRegistry()
 registry.register(...allTools)
 registry.register(createToolSearchTool(registry))
 
-// ── Memory ────────────────────────────────
 const memoryStore = new MemoryStore(".")
 memoryStore.init()
 registry.register(createMemoryTool(memoryStore))
 
-// ── RAG ────────────────────────────────
 const vectorStore = new VectorStore()
 const embedFn = process.env.DASHSCOPE_API_KEY
   ? createDashScopeEmbedder(process.env.DASHSCOPE_API_KEY)
@@ -73,21 +73,17 @@ async function connectMCP() {
   console.log(`  已注册 ${tools.length} 个 Mock MCP 工具`)
 }
 
-// ── Skills ────────────────────────────────
 const skillLoader = new SkillLoader(".")
 // const loadedSkills = skillLoader.load()
 const activeSkills = new Set<string>()
 
-// ── Plugins ────────────────────────────────
 const pluginManager = new PluginManager(registry)
 const availablePlugins = new Map<string, PluginDefinition>([
   ["supabase", supabasePlugin],
 ])
 
-// ── Security: Hook Pipeline ────────────────────────────────
 const hookPipeline = new HookPipeline()
 
-// 示例 Pre Hook: 写文件前记录日志
 hookPipeline.registerPre("audit-log", (toolName, input) => {
   if (toolName === "write_file" || toolName === "edit_file") {
     const path = (input as any)?.path || "unknown"
@@ -96,21 +92,20 @@ hookPipeline.registerPre("audit-log", (toolName, input) => {
   return { action: "allow" }
 })
 
-// 示例 Post Hook: 给 bash 输出加时间戳
 hookPipeline.registerPost("bash-timestamp", (toolName, _input, output) => {
   if (toolName === "bash") {
     const timestamp = new Date().toISOString()
-    return {
-      action: "modify",
-      modifiedOutput: `[${timestamp}]\n${output}`,
-    }
+    return { action: "modify", modifiedOutput: `[${timestamp}]\n${output}` }
   }
   return { action: "allow" }
 })
 
 registry.setHookPipeline(hookPipeline)
 
-// ── Prompt Builder ────────────────────────────────
+// ── Cron Service ────────────────────────────────
+const cronService = new CronService(".")
+registry.register(createCronTool(cronService))
+
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
   .pipe("toolGuide", toolGuide())
@@ -120,7 +115,6 @@ const builder = new PromptBuilder()
   .pipe("skillContext", () => skillLoader.buildPromptSection(activeSkills))
   .pipe("sessionContext", sessionContext())
 
-// ── Channel Gateway ────────────────────────────────
 const gateway = new ChannelGateway({
   model,
   registry,
@@ -135,7 +129,6 @@ const feishuChannel = new FeishuChannel({
 })
 gateway.register(feishuChannel)
 
-// ── Commands ────────────────────────────────
 const dispatch = createDispatcher([
   ...debugCommands,
   ...contextCommands,
@@ -146,6 +139,7 @@ const dispatch = createDispatcher([
   ...createPluginCommands(pluginManager, availablePlugins),
   ...createChannelCommands(gateway),
   ...createSecurityCommands(registry, hookPipeline),
+  ...createCronCommands(cronService),
 ])
 
 function makePromptCtx(): PromptContext {
@@ -159,8 +153,6 @@ function makePromptCtx(): PromptContext {
 
 async function main() {
   await connectMCP()
-
-  // 加载插件
   console.log("  加载插件...")
   for (const [name, def] of availablePlugins) {
     try {
@@ -171,15 +163,40 @@ async function main() {
     }
   }
 
-  // 启动 Channel
   console.log("  启动 Channel...")
   await gateway.startAll()
+
+  cronService.load()
+  cronService.setExecutor({
+    runAgentPrompt: async (prompt) => {
+      const cronMessages: ModelMessage[] = [{ role: "user", content: prompt }]
+      const system = builder.build(makePromptCtx())
+      await agentLoop(model, registry, cronMessages, system)
+      const lastMsg = cronMessages[cronMessages.length - 1]
+      if (!lastMsg) return "(无输出)"
+      if (typeof lastMsg.content === "string") return lastMsg.content
+      if (Array.isArray(lastMsg.content)) {
+        return (
+          lastMsg.content
+            .filter((p: any) => p.type === "text")
+            .map((p: any) => p.text)
+            .join("") || "(无输出)"
+        )
+      }
+      return String(lastMsg.content)
+    },
+    notify: (message) => {
+      console.log(`\n${message}`)
+    },
+  })
+  cronService.start()
+  const cronJobs = cronService.list()
+  console.log(`  Cron: ${cronJobs.length} 个任务已加载`)
 
   const store = new SessionStore("default")
   let messages: ModelMessage[] = []
   const timestamps = new Map<number, number>()
   const tracker = new UsageTracker(".usage/today.jsonl")
-
   const rl = createInterface({ input: process.stdin, output: process.stdout })
 
   function ask() {
@@ -187,12 +204,12 @@ async function main() {
       const trimmed = input.trim()
       if (!trimmed || trimmed === "exit") {
         console.log("Bye!")
+        cronService.stop()
         await gateway.stopAll()
         await pluginManager.unloadAll()
         rl.close()
         return
       }
-
       const ctx: CommandContext = {
         messages,
         timestamps,
@@ -226,7 +243,6 @@ async function main() {
       const now = Date.now()
       for (let i = beforeLen; i < messages.length; i++) timestamps.set(i, now)
       store.appendAll(newMessages)
-
       console.log(`  [Token] ~${estimateMessageTokens(messages)} tokens`)
       ask()
     })
@@ -236,26 +252,23 @@ async function main() {
   const toolCount = registry.getActiveTools().length
   const hooks = hookPipeline.list()
 
-  console.log('Naive Agent — Permissions & Hooks (type "exit" to quit)')
+  console.log('Naive Agent — Cron 定时任务 (type "exit" to quit)')
   console.log("快捷命令：")
-  console.log("  /role [角色]      — 查看/切换角色 (owner|collaborator|guest)")
+  console.log("  /cron             — 查看定时任务")
+  console.log("  /cron logs        — 查看执行记录")
+  console.log("  /role [角色]      — 查看/切换角色")
   console.log("  /hooks            — 查看 Hook 管线")
-  console.log("  /channel          — 查看通道")
-  console.log("  /plugin           — 查看插件")
-  console.log("  /skill            — 查看 skills")
-  console.log("  /memory           — 查看记忆")
   console.log("")
   console.log(`  当前角色: ${role}，可用工具: ${toolCount} 个`)
   console.log(
     `  Hook: ${hooks.pre.length} 个 pre + ${hooks.post.length} 个 post`,
   )
+  console.log(`  Cron: ${cronJobs.length} 个定时任务`)
   console.log("")
   console.log("  试试：")
-  console.log("    /role guest        — 切换到 guest，bash 等工具被禁用")
-  console.log("    测试bash           — 执行 echo，会触发 post hook 加时间戳")
-  console.log(
-    "    测试危险命令        — 模型尝试 rm -rf，会被 bash classifier 拦截",
-  )
+  console.log("    让 Agent 创建一个每 30 秒执行的定时任务")
+  console.log("    /cron         — 查看当前任务列表")
+  console.log("    /cron logs    — 查看执行记录")
   console.log("")
 
   if (fs.existsSync("docs")) {
@@ -277,7 +290,6 @@ async function main() {
       console.log(`  知识库就绪，共 ${vectorStore.size()} 个片段\n`)
     }
   }
-
   ask()
 }
 
