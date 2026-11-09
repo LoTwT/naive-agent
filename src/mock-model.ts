@@ -94,9 +94,9 @@ function makeUsage(prompt: any[], outputChars = 80) {
 
 const TEXT_RESPONSES: Record<string, string> = {
   default:
-    "你好！我是 Super Agent v0.15——现在支持 Plugin 动态加载了。试试 /plugin 看看已加载的插件，或者让我帮你查数据库。",
+    "你好！我是 Naive Agent——现在支持 Plugin 动态加载了。试试 /plugin 看看已加载的插件，或者让我帮你查数据库。",
   greeting:
-    "你好！我是 Super Agent v0.15，支持 Plugin 扩展。试试让我查数据库或者 /plugin 管理插件 :)",
+    "你好！我是 Naive Agent，支持 Plugin 扩展。试试让我查数据库或者 /plugin 管理插件 :)",
   memorySaved:
     "好的，我已经把这条信息存到记忆里了。下次你重新打开对话，我还会记得这件事。",
   memoryRecalled: "让我查一下记忆...",
@@ -446,6 +446,19 @@ function detectToolIntent(prompt: any[]): ToolCallIntent | null {
     }
   }
   if (
+    text.includes("测试危险") ||
+    text.includes("dangerous") ||
+    text.includes("删除所有")
+  ) {
+    return { toolName: "bash", args: { command: "rm -rf /tmp/test-data" } }
+  }
+  if (text.includes("测试写文件") || text.includes("test write")) {
+    return {
+      toolName: "write_file",
+      args: { path: "test-output.txt", content: "Hello from hook test" },
+    }
+  }
+  if (
     text.includes("目录") ||
     text.includes("文件列表") ||
     text.includes("ls")
@@ -640,7 +653,7 @@ export function createMockModel() {
         allText.includes("对话压缩系统") ||
         allText.includes("压缩成一份结构化摘要")
       ) {
-        const mockSummary = `## 用户意图\n用户在探索项目结构和代码，了解工具系统的设计。\n\n## 已完成的操作\n- 列出了当前目录文件（.env, package.json, sample-data.txt, src/）\n- 读取了 package.json（项目名 super-agent-08-compaction, 版本 0.8.0）\n- 读取了 sample-data.txt（工具系统设计文档）\n- 搜索了 src/ 目录中的 export（找到 ToolRegistry, agentLoop, SessionStore 等导出）\n\n## 关键发现\n- 项目使用 ai@5.0.98 和 @ai-sdk/openai@2.0.44\n- 工具系统包含 ToolRegistry、truncateResult、并发控制（读写锁）\n- 已实现 SessionStore（JSONL 持久化）和 PromptBuilder（模块化 Prompt）\n\n## 当前状态\n用户刚完成项目结构探索，尚未开始修改代码。\n\n## 需要保留的细节\n- 项目路径：当前工作目录\n- 关键文件：src/tool-registry.ts, src/agent-loop.ts, src/context-compressor.ts`
+        const mockSummary = `## 用户意图\n用户在探索项目结构和代码，了解工具系统的设计。\n\n## 已完成的操作\n- 列出了当前目录文件（.env, package.json, sample-data.txt, src/）\n- 读取了 package.json（项目名 naive-agent-08-compaction, 版本 0.8.0）\n- 读取了 sample-data.txt（工具系统设计文档）\n- 搜索了 src/ 目录中的 export（找到 ToolRegistry, agentLoop, SessionStore 等导出）\n\n## 关键发现\n- 项目使用 ai@5.0.98 和 @ai-sdk/openai@2.0.44\n- 工具系统包含 ToolRegistry、truncateResult、并发控制（读写锁）\n- 已实现 SessionStore（JSONL 持久化）和 PromptBuilder（模块化 Prompt）\n\n## 当前状态\n用户刚完成项目结构探索，尚未开始修改代码。\n\n## 需要保留的细节\n- 项目路径：当前工作目录\n- 关键文件：src/tool-registry.ts, src/agent-loop.ts, src/context-compressor.ts`
         return {
           content: [{ type: "text" as const, text: mockSummary }],
           finishReason: { unified: "stop" as const, raw: undefined },

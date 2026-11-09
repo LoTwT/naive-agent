@@ -139,7 +139,7 @@ export const webFetchTool: ToolDefinition = {
     try {
       const res = await fetch(url, {
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; SuperAgent/1.0)",
+          "User-Agent": "Mozilla/5.0 (compatible; NaiveAgent/1.0)",
           Accept: "text/html,application/xhtml+xml",
         },
         signal: AbortSignal.timeout(15000),
