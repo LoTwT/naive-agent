@@ -1,5 +1,4 @@
 // oxlint-disable unicorn/no-new-array
-
 const DIMS = 128
 
 export type EmbeddingFn = (texts: string[]) => Promise<number[][]>

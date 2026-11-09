@@ -168,7 +168,7 @@ export class FeishuChannel implements ChannelDefinition {
   </style>
 </head>
 <body>
-  <h1>Naive Agent</h1>
+  <h1>Naive Agent v0.16</h1>
   <p class="subtitle">Channel Dashboard</p>
 
   <div class="card">

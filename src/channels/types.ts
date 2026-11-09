@@ -19,6 +19,5 @@ export interface ChannelDefinition {
   start(): Promise<void> | void
   stop(): Promise<void> | void
   send(message: OutgoingMessage): Promise<void>
-
   onMessage?: (handler: (msg: IncomingMessage) => void) => void
 }

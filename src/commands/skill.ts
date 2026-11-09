@@ -1,4 +1,3 @@
-// oxlint-disable no-unused-vars
 import { type ModelMessage } from "ai"
 
 import { agentLoop } from "../agent/loop.js"
@@ -11,7 +10,7 @@ export function createSkillCommands(
 ): CommandHandler[] {
   return [
     // /skill list
-    (cmd, ctx) => {
+    (cmd) => {
       if (cmd !== "/skill" && cmd !== "/skill list" && cmd !== "skill list")
         return false
       const skills = skillLoader.list()
@@ -32,7 +31,7 @@ export function createSkillCommands(
     },
 
     // /skill load <name>
-    (cmd, ctx) => {
+    (cmd) => {
       const match = cmd.match(/^\/skill\s+load\s+(\S+)$/)
       if (!match) return false
       const name = match[1]
@@ -47,7 +46,7 @@ export function createSkillCommands(
     },
 
     // /skill unload <name>
-    (cmd, ctx) => {
+    (cmd) => {
       const match = cmd.match(/^\/skill\s+unload\s+(\S+)$/)
       if (!match) return false
       const name = match[1]

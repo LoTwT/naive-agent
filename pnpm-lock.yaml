@@ -193,6 +193,9 @@ importers:
       turndown:
         specifier: ^7.2.4
         version: 7.2.4
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
     devDependencies:
       '@modelcontextprotocol/server-github':
         specifier: ^2025.4.8

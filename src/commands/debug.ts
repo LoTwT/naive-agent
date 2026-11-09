@@ -37,7 +37,7 @@ export const debugCommands: CommandHandler[] = [
             type: "tool-result" as const,
             toolCallId: `sim-${i}`,
             toolName: "read_file",
-            output: bigContent,
+            output: bigContent as any,
           },
         ],
       })
@@ -78,8 +78,9 @@ export const debugCommands: CommandHandler[] = [
     if (cmd !== "status" && cmd !== "查看状态") return false
     const tokens = estimateMessageTokens(ctx.messages)
     const memCount = ctx.memoryStore?.list().length ?? 0
+    const ragCount = ctx.vectorStore?.size() ?? 0
     console.log(
-      `\n[状态] ${ctx.messages.length} 条消息, ~${tokens} tokens, ${memCount} 条记忆\n`,
+      `\n[状态] ${ctx.messages.length} 条消息, ~${tokens} tokens, ${memCount} 条记忆, ${ragCount} 个知识库片段\n`,
     )
     return true
   },
